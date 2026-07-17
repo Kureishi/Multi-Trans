@@ -20,7 +20,12 @@ System requirement:
     - Windows: https://ffmpeg.org/download.html
 
 How it works:
-    1. You paste a YouTube URL. It's embedded via the YouTube IFrame Player API.
+    1. Paste one or more YouTube URLs (one per line). Each gets its own tab,
+       named after the video's title, embedded via the YouTube IFrame Player API.
+       "Transcribe All" queues transcription across every pasted URL
+       sequentially (with a short delay between downloads to be a bit
+       gentler on YouTube); each tab still has its own "Transcribe audio"
+       button too, for one-at-a-time use.
     2. Clicking "Transcribe audio" downloads just the audio track with yt-dlp,
        then runs faster-whisper to get timestamped segments.
     3. A small JS component polls the player's current time and highlights /
@@ -33,12 +38,16 @@ How it works:
        captions burned into the video permanently (downloads the full video
        with yt-dlp, then uses ffmpeg's `subtitles` filter to hardcode them).
        This requires an ffmpeg build with libass support (the common default
-       builds from ffmpeg.org / most package managers include it).
+       builds from ffmpeg.org / most package managers include it). Video
+       export is deliberately per-tab, not batched — it's the heaviest
+       operation (full video download + re-encode), so it stays a manual,
+       one-at-a-time action even in batch mode.
 """
 
 import os
 import re
 import json
+import time
 import tempfile
 import subprocess
 
@@ -397,6 +406,303 @@ def caption_suffix(enable_translation: bool, translated, display_mode: str, lang
 # UI
 # ---------------------------------------------------------------------------
 
+def process_one_video(url, model_size, enable_translation, target_lang_label, display_mode):
+    """Runs the full single-video pipeline (transcribe/translate/preview/export)
+    for one YouTube URL. Called once per tab in batch mode."""
+    video_id = extract_video_id(url)
+    if not video_id:
+        st.error("Couldn't parse a YouTube video ID from that URL.")
+        return
+
+    base_name = get_video_title(video_id)
+    transcribe_key = f"transcript_{video_id}_{model_size}"
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        transcribe_clicked = st.button("Transcribe audio", type="primary", key=f"transcribe_btn_{video_id}")
+
+    if transcribe_clicked:
+        with st.spinner("Downloading audio and transcribing — this can take a while for long videos..."):
+            try:
+                st.session_state[transcribe_key] = transcribe(video_id, model_size)
+            except Exception as e:
+                st.error(f"Transcription failed: {e}")
+                st.session_state[transcribe_key] = None
+
+    transcript = st.session_state.get(transcribe_key)
+
+    translated = None
+    if transcript and enable_translation:
+        target_lang_code = LANGUAGES[target_lang_label]
+        with st.spinner(f"Translating to {target_lang_label}..."):
+            try:
+                translated = translate_segments(video_id, model_size, target_lang_code)
+            except Exception as e:
+                st.error(f"Translation failed: {e}")
+                translated = None
+
+    if transcript and enable_translation and translated:
+        if display_mode == "Translated only":
+            display_segments = translated
+        elif display_mode == "Both":
+            display_segments = [
+                {"start": o["start"], "end": o["end"], "text": f"{o['text']}\n{t['text']}"}
+                for o, t in zip(transcript, translated)
+            ]
+        else:  # Original only
+            display_segments = transcript
+    else:
+        display_segments = transcript
+
+    show_overlay = st.checkbox("Show subtitle overlay on video", value=True, key=f"show_overlay_{video_id}")
+    segments_json = json.dumps(display_segments or [])
+    overlay_enabled_js = "true" if show_overlay else "false"
+
+    html_code = f"""
+    <div id="app">
+      <div id="player-wrap" style="position:relative; width:100%; max-width:720px; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden;">
+        <div id="player" style="width:100%; height:100%;"></div>
+        <div id="caption-overlay" style="
+            position:absolute; left:50%; bottom:6%; transform:translateX(-50%);
+            max-width:88%; text-align:center; pointer-events:none;
+            background: rgba(0,0,0,0.7); color:#fff; padding:6px 14px;
+            border-radius:6px; font-family:sans-serif; font-size:1.05em;
+            line-height:1.35; white-space:pre-line; z-index:5; display:none;"></div>
+      </div>
+      <div id="transcript-box" style="
+          height: 320px; overflow-y: auto; margin-top: 12px;
+          border: 1px solid #444; border-radius: 8px; padding: 10px;
+          font-family: sans-serif; font-size: 14px; background: #111; color: #eee; white-space:pre-line;">
+        <div id="transcript-inner"></div>
+      </div>
+    </div>
+
+    <script>
+      const segments = {segments_json};
+      const overlayEnabled = {overlay_enabled_js};
+      let player;
+      let currentIdx = -1;
+
+      function formatTime(t) {{
+        t = Math.floor(t);
+        const h = Math.floor(t/3600), m = Math.floor((t%3600)/60), s = t%60;
+        const mm = h ? String(m).padStart(2,'0') : m;
+        const ss = String(s).padStart(2,'0');
+        return h ? `${{h}}:${{mm}}:${{ss}}` : `${{mm}}:${{ss}}`;
+      }}
+
+      function escapeHtml(str) {{
+        const d = document.createElement('div');
+        d.innerText = str;
+        return d.innerHTML;
+      }}
+
+      function seekTo(t) {{
+        if (player && player.seekTo) {{
+          player.seekTo(t, true);
+          player.playVideo();
+        }}
+      }}
+
+      function renderTranscript() {{
+        const inner = document.getElementById('transcript-inner');
+        if (!segments.length) {{
+          inner.innerHTML = "<em>No transcript yet. Click 'Transcribe audio' in the app.</em>";
+          return;
+        }}
+        inner.innerHTML = segments.map((seg, i) => `
+          <div id="seg-${{i}}"
+               onclick="seekTo(${{seg.start}})"
+               style="padding:4px 6px; cursor:pointer; border-radius:4px; margin-bottom:2px;">
+            <span style="color:#8ab4f8; margin-right:8px;">${{formatTime(seg.start)}}</span>${{escapeHtml(seg.text)}}
+          </div>
+        `).join('');
+      }}
+
+      // Robust init: don't rely solely on window.onYouTubeIframeAPIReady, since
+      // that callback can race (or silently never fire) inside an embedded
+      // component iframe, especially if the script is cached. Poll instead.
+      function createPlayer() {{
+        if (player) return;
+        player = new YT.Player('player', {{
+          height: '100%',
+          width: '100%',
+          videoId: '{video_id}',
+          playerVars: {{ playsinline: 1 }},
+          events: {{ 'onReady': onPlayerReady }}
+        }});
+      }}
+
+      function waitForYT() {{
+        if (window.YT && window.YT.Player) {{
+          createPlayer();
+        }} else {{
+          setTimeout(waitForYT, 100);
+        }}
+      }}
+
+      // Keep the official callback too — harmless if it fires (createPlayer
+      // just no-ops if already created), and covers the normal-case timing.
+      window.onYouTubeIframeAPIReady = createPlayer;
+
+      (function loadApi() {{
+        const tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        document.head.appendChild(tag);
+      }})();
+
+      waitForYT();
+
+      function onPlayerReady(event) {{
+        setInterval(updateHighlight, 400);
+      }}
+
+      function updateHighlight() {{
+        if (!player || !player.getCurrentTime || !segments.length) return;
+        const t = player.getCurrentTime();
+        let idx = -1;
+        for (let i = 0; i < segments.length; i++) {{
+          if (t >= segments[i].start && t < segments[i].end) {{ idx = i; break; }}
+        }}
+        if (idx !== currentIdx) {{
+          if (currentIdx >= 0) {{
+            const prevEl = document.getElementById('seg-' + currentIdx);
+            if (prevEl) prevEl.style.background = 'transparent';
+          }}
+          const overlay = document.getElementById('caption-overlay');
+          if (idx >= 0) {{
+            const el = document.getElementById('seg-' + idx);
+            if (el) {{
+              el.style.background = '#2b3a55';
+              el.scrollIntoView({{ block: 'center', behavior: 'smooth' }});
+            }}
+            overlay.textContent = segments[idx].text;
+            overlay.style.display = overlayEnabled ? 'block' : 'none';
+          }} else {{
+            overlay.style.display = 'none';
+          }}
+          currentIdx = idx;
+        }}
+      }}
+
+      renderTranscript();
+    </script>
+    """
+
+    components.html(html_code, height=800, scrolling=False)
+
+    if transcript:
+        full_text = "\n".join(f"[{fmt_time(s['start'])}] {s['text']}" for s in transcript)
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                "Download original transcript (.txt)",
+                data=full_text,
+                file_name=f"{base_name}_transcript_orig.txt",
+                mime="text/plain",
+                key=f"dl_transcript_orig_{video_id}",
+            )
+        if translated:
+            translated_text = "\n".join(f"[{fmt_time(s['start'])}] {s['text']}" for s in translated)
+            lang_code = LANGUAGES[target_lang_label]
+            with dl_col2:
+                st.download_button(
+                    f"Download {target_lang_label} transcript (.txt)",
+                    data=translated_text,
+                    file_name=f"{base_name}_transcript_{lang_code}.txt",
+                    mime="text/plain",
+                    key=f"dl_transcript_translated_{video_id}_{lang_code}",
+                )
+
+        st.divider()
+        st.subheader("🔊 Download audio only")
+        st.caption("No video, just an audio file — more than the plain-text transcript, less than a full video.")
+
+        aud_col1, aud_col2 = st.columns(2)
+
+        with aud_col1:
+            if st.button("Prepare original audio (.mp3)", key=f"prep_orig_audio_btn_{video_id}"):
+                with st.spinner("Extracting original audio..."):
+                    try:
+                        st.session_state[f"orig_audio_{video_id}"] = extract_original_audio_mp3(video_id)
+                    except Exception as e:
+                        st.error(f"Audio extraction failed: {e}")
+            orig_audio = st.session_state.get(f"orig_audio_{video_id}")
+            if orig_audio:
+                st.download_button(
+                    "Download original audio (.mp3)",
+                    data=orig_audio,
+                    file_name=f"{base_name}_orig.mp3",
+                    mime="audio/mpeg",
+                    key=f"dl_orig_audio_{video_id}",
+                )
+
+        with aud_col2:
+            if enable_translation and translated:
+                if st.button(f"Prepare dubbed {target_lang_label} audio (.mp3)", key=f"prep_dub_audio_btn_{video_id}"):
+                    with st.spinner("Synthesizing dubbed audio — timing is approximate..."):
+                        try:
+                            lang_code = LANGUAGES[target_lang_label]
+                            st.session_state[f"dub_audio_{video_id}_{lang_code}"] = synthesize_dubbed_audio(
+                                video_id, lang_code, json.dumps(translated)
+                            )
+                        except Exception as e:
+                            st.error(f"Dubbing failed: {e}")
+                lang_code = LANGUAGES[target_lang_label]
+                dub_audio = st.session_state.get(f"dub_audio_{video_id}_{lang_code}")
+                if dub_audio:
+                    st.download_button(
+                        f"Download dubbed {target_lang_label} audio (.mp3)",
+                        data=dub_audio,
+                        file_name=f"{base_name}_dubbed_{lang_code}.mp3",
+                        mime="audio/mpeg",
+                        key=f"dl_dub_audio_{video_id}_{lang_code}",
+                    )
+                    st.caption(
+                        "Auto-generated via edge-tts, with lines sped up (up to "
+                        f"{MAX_RATE_SPEEDUP_PCT}%) when needed to fit their original time slot. "
+                        "Still approximate — very fast/dense speech can still overlap."
+                    )
+            else:
+                st.caption("Enable translation in the sidebar to also get a dubbed audio track.")
+
+        st.divider()
+        st.subheader("Export video with burned-in captions")
+        st.caption(
+            "Downloads the full video and hardcodes the captions currently shown "
+            "above (original / translated / both, per your sidebar settings) into "
+            "a new .mp4. This downloads much more data than transcription alone "
+            "and can take a while for long videos."
+        )
+        quality = st.selectbox("Video quality", list(QUALITY_HEIGHTS.keys()), index=1, key=f"quality_{video_id}")
+        render_clicked = st.button("Render MP4 with captions", key=f"render_btn_{video_id}")
+
+        rendered_key = f"rendered_video_{video_id}"
+        rendered_name_key = f"rendered_video_name_{video_id}"
+
+        if render_clicked:
+            srt_text = build_srt(display_segments)
+            lang_code = LANGUAGES[target_lang_label]
+            suffix = caption_suffix(enable_translation, translated, display_mode, lang_code)
+            with st.spinner("Downloading video and burning in captions — this can take several minutes..."):
+                try:
+                    video_bytes = render_captioned_video(video_id, quality, srt_text)
+                    st.session_state[rendered_key] = video_bytes
+                    st.session_state[rendered_name_key] = f"{base_name}_captioned{suffix}.mp4"
+                except Exception as e:
+                    st.error(f"Rendering failed: {e}")
+
+        if st.session_state.get(rendered_key):
+            st.video(st.session_state[rendered_key])
+            st.download_button(
+                "Download captioned MP4",
+                data=st.session_state[rendered_key],
+                file_name=st.session_state.get(rendered_name_key, f"{base_name}_captioned.mp4"),
+                mime="video/mp4",
+                key=f"dl_rendered_video_{video_id}",
+            )
+
+
 def run():
     st.title("🎬 YouTube Video + Synced Transcript")
 
@@ -429,298 +735,87 @@ def run():
         )
         st.caption("Translation uses Google Translate via the free `deep-translator` package (requires internet).")
 
-    url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+    urls_text = st.text_area(
+        "YouTube URLs (one per line)",
+        placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...",
+        height=100,
+    )
+    raw_lines = [line.strip() for line in urls_text.splitlines() if line.strip()]
 
-    if url:
-        video_id = extract_video_id(url)
-        if not video_id:
-            st.error("Couldn't parse a YouTube video ID from that URL.")
-            st.stop()
+    if raw_lines:
+        seen_ids = {}
+        videos = []  # (url, video_id)
+        invalid = []
+        duplicates = []  # (dup_url, original_url)
 
-        if st.session_state.get("video_id") != video_id:
-            st.session_state.video_id = video_id
-            st.session_state.transcript = None
+        for line in raw_lines:
+            vid = extract_video_id(line)
+            if not vid:
+                invalid.append(line)
+                continue
+            if vid in seen_ids:
+                duplicates.append((line, seen_ids[vid]))
+                continue
+            seen_ids[vid] = line
+            videos.append((line, vid))
 
-        base_name = get_video_title(video_id)
+        if invalid:
+            st.warning("Couldn't parse a video ID from: " + "; ".join(invalid))
+        if duplicates:
+            lines_msg = "; ".join(f"'{dup}' is the same video as '{orig}'" for dup, orig in duplicates)
+            st.warning(f"Skipped {len(duplicates)} duplicate video(s): {lines_msg}. Only one copy of each is processed below.")
 
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            transcribe_clicked = st.button("Transcribe audio", type="primary")
+        if videos:
+            if st.button(f"Transcribe All ({len(videos)} videos)", key="transcribe_all_videos_btn"):
+                progress = st.progress(0.0, text="Starting batch transcription...")
+                results = []  # (label, success, message)
 
-        if transcribe_clicked:
-            with st.spinner("Downloading audio and transcribing — this can take a while for long videos..."):
-                try:
-                    st.session_state.transcript = transcribe(video_id, model_size)
-                except Exception as e:
-                    st.error(f"Transcription failed: {e}")
-                    st.session_state.transcript = None
-
-        transcript = st.session_state.get("transcript")
-
-        translated = None
-        if transcript and enable_translation:
-            target_lang_code = LANGUAGES[target_lang_label]
-            with st.spinner(f"Translating to {target_lang_label}..."):
-                try:
-                    translated = translate_segments(video_id, model_size, target_lang_code)
-                except Exception as e:
-                    st.error(f"Translation failed: {e}")
-                    translated = None
-
-        if transcript and enable_translation and translated:
-            if display_mode == "Translated only":
-                display_segments = translated
-            elif display_mode == "Both":
-                display_segments = [
-                    {"start": o["start"], "end": o["end"], "text": f"{o['text']}\n{t['text']}"}
-                    for o, t in zip(transcript, translated)
-                ]
-            else:  # Original only
-                display_segments = transcript
-        else:
-            display_segments = transcript
-
-        show_overlay = st.checkbox("Show subtitle overlay on video", value=True)
-        segments_json = json.dumps(display_segments or [])
-        overlay_enabled_js = "true" if show_overlay else "false"
-
-        html_code = f"""
-        <div id="app">
-          <div id="player-wrap" style="position:relative; width:100%; max-width:720px; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden;">
-            <div id="player" style="width:100%; height:100%;"></div>
-            <div id="caption-overlay" style="
-                position:absolute; left:50%; bottom:6%; transform:translateX(-50%);
-                max-width:88%; text-align:center; pointer-events:none;
-                background: rgba(0,0,0,0.7); color:#fff; padding:6px 14px;
-                border-radius:6px; font-family:sans-serif; font-size:1.05em;
-                line-height:1.35; white-space:pre-line; z-index:5; display:none;"></div>
-          </div>
-          <div id="transcript-box" style="
-              height: 320px; overflow-y: auto; margin-top: 12px;
-              border: 1px solid #444; border-radius: 8px; padding: 10px;
-              font-family: sans-serif; font-size: 14px; background: #111; color: #eee; white-space:pre-line;">
-            <div id="transcript-inner"></div>
-          </div>
-        </div>
-
-        <script>
-          const segments = {segments_json};
-          const overlayEnabled = {overlay_enabled_js};
-          let player;
-          let currentIdx = -1;
-
-          function formatTime(t) {{
-            t = Math.floor(t);
-            const h = Math.floor(t/3600), m = Math.floor((t%3600)/60), s = t%60;
-            const mm = h ? String(m).padStart(2,'0') : m;
-            const ss = String(s).padStart(2,'0');
-            return h ? `${{h}}:${{mm}}:${{ss}}` : `${{mm}}:${{ss}}`;
-          }}
-
-          function escapeHtml(str) {{
-            const d = document.createElement('div');
-            d.innerText = str;
-            return d.innerHTML;
-          }}
-
-          function seekTo(t) {{
-            if (player && player.seekTo) {{
-              player.seekTo(t, true);
-              player.playVideo();
-            }}
-          }}
-
-          function renderTranscript() {{
-            const inner = document.getElementById('transcript-inner');
-            if (!segments.length) {{
-              inner.innerHTML = "<em>No transcript yet. Click 'Transcribe audio' in the app.</em>";
-              return;
-            }}
-            inner.innerHTML = segments.map((seg, i) => `
-              <div id="seg-${{i}}"
-                   onclick="seekTo(${{seg.start}})"
-                   style="padding:4px 6px; cursor:pointer; border-radius:4px; margin-bottom:2px;">
-                <span style="color:#8ab4f8; margin-right:8px;">${{formatTime(seg.start)}}</span>${{escapeHtml(seg.text)}}
-              </div>
-            `).join('');
-          }}
-
-          // Robust init: don't rely solely on window.onYouTubeIframeAPIReady, since
-          // that callback can race (or silently never fire) inside an embedded
-          // component iframe, especially if the script is cached. Poll instead.
-          function createPlayer() {{
-            if (player) return;
-            player = new YT.Player('player', {{
-              height: '100%',
-              width: '100%',
-              videoId: '{video_id}',
-              playerVars: {{ playsinline: 1 }},
-              events: {{ 'onReady': onPlayerReady }}
-            }});
-          }}
-
-          function waitForYT() {{
-            if (window.YT && window.YT.Player) {{
-              createPlayer();
-            }} else {{
-              setTimeout(waitForYT, 100);
-            }}
-          }}
-
-          // Keep the official callback too — harmless if it fires (createPlayer
-          // just no-ops if already created), and covers the normal-case timing.
-          window.onYouTubeIframeAPIReady = createPlayer;
-
-          (function loadApi() {{
-            const tag = document.createElement('script');
-            tag.src = "https://www.youtube.com/iframe_api";
-            document.head.appendChild(tag);
-          }})();
-
-          waitForYT();
-
-          function onPlayerReady(event) {{
-            setInterval(updateHighlight, 400);
-          }}
-
-          function updateHighlight() {{
-            if (!player || !player.getCurrentTime || !segments.length) return;
-            const t = player.getCurrentTime();
-            let idx = -1;
-            for (let i = 0; i < segments.length; i++) {{
-              if (t >= segments[i].start && t < segments[i].end) {{ idx = i; break; }}
-            }}
-            if (idx !== currentIdx) {{
-              if (currentIdx >= 0) {{
-                const prevEl = document.getElementById('seg-' + currentIdx);
-                if (prevEl) prevEl.style.background = 'transparent';
-              }}
-              const overlay = document.getElementById('caption-overlay');
-              if (idx >= 0) {{
-                const el = document.getElementById('seg-' + idx);
-                if (el) {{
-                  el.style.background = '#2b3a55';
-                  el.scrollIntoView({{ block: 'center', behavior: 'smooth' }});
-                }}
-                overlay.textContent = segments[idx].text;
-                overlay.style.display = overlayEnabled ? 'block' : 'none';
-              }} else {{
-                overlay.style.display = 'none';
-              }}
-              currentIdx = idx;
-            }}
-          }}
-
-          renderTranscript();
-        </script>
-        """
-
-        components.html(html_code, height=800, scrolling=False)
-
-        if transcript:
-            full_text = "\n".join(f"[{fmt_time(s['start'])}] {s['text']}" for s in transcript)
-            dl_col1, dl_col2 = st.columns(2)
-            with dl_col1:
-                st.download_button(
-                    "Download original transcript (.txt)",
-                    data=full_text,
-                    file_name=f"{base_name}_transcript_orig.txt",
-                    mime="text/plain",
-                )
-            if translated:
-                translated_text = "\n".join(f"[{fmt_time(s['start'])}] {s['text']}" for s in translated)
-                lang_code = LANGUAGES[target_lang_label]
-                with dl_col2:
-                    st.download_button(
-                        f"Download {target_lang_label} transcript (.txt)",
-                        data=translated_text,
-                        file_name=f"{base_name}_transcript_{lang_code}.txt",
-                        mime="text/plain",
+                for i, (video_url, vid) in enumerate(videos):
+                    label = get_video_title(vid)
+                    progress.progress(
+                        i / len(videos),
+                        text=f"Transcribing {label} ({i + 1}/{len(videos)})...",
                     )
-
-            st.divider()
-            st.subheader("🔊 Download audio only")
-            st.caption("No video, just an audio file — more than the plain-text transcript, less than a full video.")
-
-            aud_col1, aud_col2 = st.columns(2)
-
-            with aud_col1:
-                if st.button("Prepare original audio (.mp3)"):
-                    with st.spinner("Extracting original audio..."):
-                        try:
-                            st.session_state[f"orig_audio_{video_id}"] = extract_original_audio_mp3(video_id)
-                        except Exception as e:
-                            st.error(f"Audio extraction failed: {e}")
-                orig_audio = st.session_state.get(f"orig_audio_{video_id}")
-                if orig_audio:
-                    st.download_button(
-                        "Download original audio (.mp3)",
-                        data=orig_audio,
-                        file_name=f"{base_name}_orig.mp3",
-                        mime="audio/mpeg",
-                    )
-
-            with aud_col2:
-                if enable_translation and translated:
-                    if st.button(f"Prepare dubbed {target_lang_label} audio (.mp3)"):
-                        with st.spinner("Synthesizing dubbed audio — timing is approximate..."):
-                            try:
-                                lang_code = LANGUAGES[target_lang_label]
-                                st.session_state[f"dub_audio_{video_id}_{lang_code}"] = synthesize_dubbed_audio(
-                                    video_id, lang_code, json.dumps(translated)
-                                )
-                            except Exception as e:
-                                st.error(f"Dubbing failed: {e}")
-                    lang_code = LANGUAGES[target_lang_label]
-                    dub_audio = st.session_state.get(f"dub_audio_{video_id}_{lang_code}")
-                    if dub_audio:
-                        st.download_button(
-                            f"Download dubbed {target_lang_label} audio (.mp3)",
-                            data=dub_audio,
-                            file_name=f"{base_name}_dubbed_{lang_code}.mp3",
-                            mime="audio/mpeg",
-                        )
-                        st.caption(
-                            "Auto-generated via edge-tts, with lines sped up (up to "
-                            f"{MAX_RATE_SPEEDUP_PCT}%) when needed to fit their original time slot. "
-                            "Still approximate — very fast/dense speech can still overlap."
-                        )
-                else:
-                    st.caption("Enable translation in the sidebar to also get a dubbed audio track.")
-
-            st.divider()
-            st.subheader("Export video with burned-in captions")
-            st.caption(
-                "Downloads the full video and hardcodes the captions currently shown "
-                "above (original / translated / both, per your sidebar settings) into "
-                "a new .mp4. This downloads much more data than transcription alone "
-                "and can take a while for long videos."
-            )
-            quality = st.selectbox("Video quality", list(QUALITY_HEIGHTS.keys()), index=1)
-            render_clicked = st.button("Render MP4 with captions")
-
-            if render_clicked:
-                srt_text = build_srt(display_segments)
-                lang_code = LANGUAGES[target_lang_label]
-                suffix = caption_suffix(enable_translation, translated, display_mode, lang_code)
-                with st.spinner("Downloading video and burning in captions — this can take several minutes..."):
                     try:
-                        video_bytes = render_captioned_video(video_id, quality, srt_text)
-                        st.session_state.rendered_video = video_bytes
-                        st.session_state.rendered_video_name = f"{base_name}_captioned{suffix}.mp4"
+                        transcript = transcribe(vid, model_size)
+                        st.session_state[f"transcript_{vid}_{model_size}"] = transcript
+                        results.append((label, True, None))
                     except Exception as e:
-                        st.error(f"Rendering failed: {e}")
+                        results.append((label, False, str(e)))
+                    progress.progress((i + 1) / len(videos))
+                    if i + 1 < len(videos):
+                        time.sleep(1.5)  # be a little gentler on YouTube between downloads
 
-            if st.session_state.get("rendered_video"):
-                st.video(st.session_state.rendered_video)
-                st.download_button(
-                    "Download captioned MP4",
-                    data=st.session_state.rendered_video,
-                    file_name=st.session_state.get("rendered_video_name", f"{base_name}_captioned.mp4"),
-                    mime="video/mp4",
-                )
+                progress.empty()
+                successes = [r for r in results if r[1]]
+                failures = [r for r in results if not r[1]]
+                if successes:
+                    st.success(
+                        f"Transcribed {len(successes)}/{len(results)} video(s) with the '{model_size}' model. "
+                        "Open a tab to view, translate, or export it."
+                    )
+                if failures:
+                    st.error("Failed: " + "; ".join(f"{name} ({msg})" for name, _, msg in failures))
+
+            tab_labels = []
+            seen_labels = {}
+            for _, vid in videos:
+                label = get_video_title(vid)
+                if label in seen_labels:
+                    seen_labels[label] += 1
+                    label = f"{label} ({seen_labels[label]})"
+                else:
+                    seen_labels[label] = 1
+                tab_labels.append(label)
+
+            tabs = st.tabs(tab_labels)
+            for tab, (video_url, vid) in zip(tabs, videos):
+                with tab:
+                    process_one_video(video_url, model_size, enable_translation, target_lang_label, display_mode)
+        else:
+            st.info("Paste at least one valid YouTube URL above to get started.")
     else:
-        st.info("Paste a YouTube URL above to get started.")
+        st.info("Paste one or more YouTube URLs above to get started (one per line).")
 
 
 if __name__ == "__main__":

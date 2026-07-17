@@ -8,7 +8,7 @@ your own uploaded files — all in Streamlit.
 | File | What it does |
 |---|---|
 | `transcriber_app.py` | **Launcher.** Sidebar lets you pick "YouTube URL" or "Upload a File", then dispatches to one of the two apps below. Run this one. |
-| `youtube_transcriber.py` | Paste a YouTube URL → embedded player with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. |
+| `youtube_transcriber.py` | Paste YouTube URL(s) (one or many, one per line) → embedded player(s) with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. Batch mode: one tab per video. |
 | `media_file_transcriber.py` | Upload your own audio/video file(s) → same feature set, plus **batch mode** (multiple files, each in its own tab). |
 | `requirements.txt` | Python dependencies. |
 
@@ -74,9 +74,10 @@ streamlit run media_file_transcriber.py
 ## Usage notes
 
 - **Transcribe first**, then optionally enable translation in the sidebar — translation re-runs automatically when you change the target language or display mode, but transcription itself only re-runs when you click the button (and only if the model size changed).
-- **Batch mode**: upload multiple files, hit **"Transcribe All"** to queue transcription across all of them (sequential — Streamlit is single-threaded per session, so this isn't parallel), then open individual tabs to translate/export each one. Uploading the exact same file content twice is detected and skipped with a warning, rather than erroring.
+- **Batch mode**: both apps support processing multiple items at once — paste several YouTube URLs (one per line) or upload multiple files — each gets its own tab named after its source. **"Transcribe All"** queues transcription across all of them sequentially (Streamlit is single-threaded per session, so this isn't parallel), then open individual tabs to translate/export each one. Duplicate items (same video ID, or identical file content) are detected and skipped with a warning rather than erroring. Video export (MP4 with burned-in captions) stays a deliberate per-tab action in both apps — it's the heaviest operation, so it's not batched.
 - **MP4 export** re-encodes the video track (audio is stream-copied), so it's slower than transcription — expect it to take a while on longer/higher-resolution videos.
 - Files embedded for the custom player/overlay in the upload app are inlined as base64, so very large uploads (100+ MB) will be slow to preview in-browser; transcription/translation/export aren't affected.
+- YouTube batch mode is network-bound (each video is actually downloaded), so it's noticeably slower per item than file batch mode and scales with video count accordingly. There's a short delay between downloads to be gentler on YouTube, but a large batch can still take a while — and is more exposed to YouTube-side rate limiting than local files ever would be.
 
 ## Limitations
 
