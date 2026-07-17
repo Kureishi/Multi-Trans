@@ -18,7 +18,7 @@ Each app file is also fully runnable on its own (`streamlit run youtube_transcri
 
 - **Playback with synced captions**: transcript segments highlight and auto-scroll in time with the video/audio, and can also be overlaid directly on the video (or shown as a big "lyrics" line for audio-only files).
 - **Transcription** via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (choose model size: `tiny` → `large-v3`).
-- **Translation** to 13 languages via Google Translate (free, through `deep-translator`), with a choice of showing Original / Translated / Both.
+- **Translation** to 14 languages (including English) via Google Translate (free, through `deep-translator`), with a choice of showing Original / Translated / Both. Source language is auto-detected, so this also covers translating non-English audio *into* English.
 - **Dubbed audio** via [edge-tts](https://github.com/rany2/edge-tts): synthesizes each translated line and times it to the original segment, speeding lines up (capped, to stay intelligible) when they'd otherwise run long and overlap the next one. This is an approximation of a real dub, not a polished one — see **Limitations** below.
 - **Export**:
   - Downloadable `.txt` transcripts (original and/or translated).
@@ -81,6 +81,7 @@ streamlit run media_file_transcriber.py
 ## Limitations
 
 - **Translation** uses the free, unofficial Google Translate backend (via `deep-translator`) — good for everyday use, not a professional MT service, and requires internet access.
+- **Source language is auto-detected**, not user-specified — this works for any spoken language (transcription and translation aren't locked to English), but manually specifying it when you already know it (e.g. `language="es"`) would improve both speed and accuracy. Not yet exposed as an option.
 - **Dubbed audio** is an approximation: TTS pacing rarely matches the original speaker exactly. Lines are sped up by up to 50% to try to fit their original time slot; anything that would need more than that to fit will still overlap somewhat. Treat it as "get the gist in another language," not a lip-synced dub.
 - **edge-tts** is an unofficial, reverse-engineered wrapper around Microsoft's Read Aloud service (same category of tool as the free Google Translate backend above) — free and keyless, but not an official/supported API.
 - A few uploaded formats (`.wma`, `.mov`, `.mkv`, `.avi`, `.flv`) commonly don't play back natively in the browser's preview player even though transcription/translation/export all still work fine on them — the app flags this when it applies.

@@ -130,6 +130,7 @@ SUPPORTED_EXTS = [ext.lstrip(".") for ext in EXT_INFO]
 
 
 LANGUAGES = {
+    "English": "en",
     "Japanese": "ja",
     "Spanish": "es",
     "French": "fr",
@@ -289,6 +290,7 @@ def extract_original_audio_mp3(file_id: str, suffix: str, is_video: bool) -> byt
 
 
 EDGE_VOICE_MAP = {
+    "en": "en-US-AriaNeural",
     "ja": "ja-JP-NanamiNeural",
     "es": "es-ES-ElviraNeural",
     "fr": "fr-FR-DeniseNeural",

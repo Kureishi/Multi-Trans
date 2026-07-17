@@ -117,6 +117,7 @@ def fmt_time(t: float) -> str:
 
 
 LANGUAGES = {
+    "English": "en",
     "Japanese": "ja",
     "Spanish": "es",
     "French": "fr",
@@ -255,6 +256,7 @@ def extract_original_audio_mp3(video_id: str) -> bytes:
 
 
 EDGE_VOICE_MAP = {
+    "en": "en-US-AriaNeural",
     "ja": "ja-JP-NanamiNeural",
     "es": "es-ES-ElviraNeural",
     "fr": "fr-FR-DeniseNeural",
