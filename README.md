@@ -11,6 +11,7 @@ your own uploaded files — all in Streamlit.
 | `youtube_transcriber.py` | Paste YouTube URL(s) (one or many, one per line) → embedded player(s) with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. Batch mode: one tab per video. |
 | `media_file_transcriber.py` | Upload your own audio/video file(s) → same feature set, plus **batch mode** (multiple files, each in its own tab). |
 | `cli.py` | Command-line interface — same engine as both apps above, no browser needed. Good for scripting/automation. |
+| `pyproject.toml` | Packaging config — installs `cli.py` as a standalone `mtt` command (see below). |
 | `requirements.txt` | Python dependencies. |
 
 Each app file is also fully runnable on its own (`streamlit run youtube_transcriber.py`), independent of the launcher.
@@ -57,6 +58,18 @@ Required flags: `--input_type {file,url}`, `--source` (one or more paths/URLs), 
 Useful optional flags: `--model` (Whisper size, default `base`), `--target-lang` (enables translation), `--display-mode` (`"Original only"` / `"Translated only"` / `"Both"` — controls what goes into `.txt`/`.mp4` output when translating), `--quality` (YouTube MP4 export resolution), `--resolution`/`--bg-color`/`--waveform` (lyric-video export for audio file uploads), `--output-dir` (default `./output`).
 
 Behaves like the UI's batch mode: duplicate sources are detected and skipped (by video ID for URLs, by absolute path for files), YouTube downloads get a short pause between them, and a failed source is logged and skipped rather than aborting the whole run — exit code is `1` if anything failed, `0` otherwise.
+
+### Installing it as a standalone `mtt` command
+
+`pyproject.toml` registers `cli.py`'s `main()` as a console-script entry point, so an editable install gives you a real `mtt` command on your `PATH` — no more typing `python cli.py`, and no more needing to run it from inside the project folder:
+
+```bash
+pip install -e .
+mtt --list-languages          # works from anywhere now
+mtt --input_type file --source clip.mp3 --output_type txt
+```
+
+This is also the scaffold for turning this into a proper published pip package later — `pyproject.toml` already declares the dependencies and the `mtt` entry point; publishing would mainly mean choosing a real package name/version and running through `build`/`twine` (or similar), rather than restructuring anything here.
 
 ## Setup
 

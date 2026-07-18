@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-transcriber-suite"
+version = "0.1.0"
+description = "Transcribe, translate, dub, and caption audio/video from files or YouTube URLs."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "streamlit>=1.38",
+    "faster-whisper>=1.0",
+    "yt-dlp>=2024.8.6",
+    "deep-translator>=1.11",
+    "edge-tts>=6.1",
+]
+
+[project.scripts]
+mtt = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli", "youtube_transcriber", "media_file_transcriber", "transcriber_app"]
