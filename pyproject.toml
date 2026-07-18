@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "media-transcriber-suite"
+name = "mtt-transcriber"
 version = "0.1.0"
 description = "Transcribe, translate, dub, and caption audio/video from files or YouTube URLs."
 readme = "README.md"
