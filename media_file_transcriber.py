@@ -718,14 +718,17 @@ def process_one_file(uploaded_file, model_size, enable_translation, target_lang_
 
         rendered = st.session_state.get(rendered_key)
         if rendered:
-            st.video(rendered)
-            st.download_button(
-                "Download captioned MP4",
-                data=rendered,
-                file_name=st.session_state.get(f"{rendered_key}_name", f"{base_name}_captioned.mp4"),
-                mime="video/mp4",
-                key=f"dl_rendered_video_{fid}",
-            )
+            preview_col, dl_col = st.columns([3, 1])
+            with preview_col:
+                st.video(rendered)
+            with dl_col:
+                st.download_button(
+                    "Download captioned MP4",
+                    data=rendered,
+                    file_name=st.session_state.get(f"{rendered_key}_name", f"{base_name}_captioned.mp4"),
+                    mime="video/mp4",
+                    key=f"dl_rendered_video_{fid}",
+                )
 
 
 def run():

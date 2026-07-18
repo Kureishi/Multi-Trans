@@ -693,14 +693,17 @@ def process_one_video(url, model_size, enable_translation, target_lang_label, di
                     st.error(f"Rendering failed: {e}")
 
         if st.session_state.get(rendered_key):
-            st.video(st.session_state[rendered_key])
-            st.download_button(
-                "Download captioned MP4",
-                data=st.session_state[rendered_key],
-                file_name=st.session_state.get(rendered_name_key, f"{base_name}_captioned.mp4"),
-                mime="video/mp4",
-                key=f"dl_rendered_video_{video_id}",
-            )
+            preview_col, dl_col = st.columns([3, 1])
+            with preview_col:
+                st.video(st.session_state[rendered_key])
+            with dl_col:
+                st.download_button(
+                    "Download captioned MP4",
+                    data=st.session_state[rendered_key],
+                    file_name=st.session_state.get(rendered_name_key, f"{base_name}_captioned.mp4"),
+                    mime="video/mp4",
+                    key=f"dl_rendered_video_{video_id}",
+                )
 
 
 def run():
