@@ -10,6 +10,7 @@ your own uploaded files — all in Streamlit.
 | `transcriber_app.py` | **Launcher.** Sidebar lets you pick "YouTube URL" or "Upload a File", then dispatches to one of the two apps below. Run this one. |
 | `youtube_transcriber.py` | Paste YouTube URL(s) (one or many, one per line) → embedded player(s) with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. Batch mode: one tab per video. |
 | `media_file_transcriber.py` | Upload your own audio/video file(s) → same feature set, plus **batch mode** (multiple files, each in its own tab). |
+| `cli.py` | Command-line interface — same engine as both apps above, no browser needed. Good for scripting/automation. |
 | `requirements.txt` | Python dependencies. |
 
 Each app file is also fully runnable on its own (`streamlit run youtube_transcriber.py`), independent of the launcher.
@@ -27,6 +28,35 @@ Each app file is also fully runnable on its own (`streamlit run youtube_transcri
 - **Batch mode** (file-upload app only): upload several files at once, each gets its own tab named after the file. A "Transcribe All" button queues transcription across all of them sequentially.
 - **Broad format support** for uploads: audio `.mp3 .wav .m4a .aac .flac .ogg .opus .wma`, video `.mp4 .m4v .webm .mov .mkv .avi .flv`.
 - **Sensible filenames**: downloads are named after the source (video title for YouTube, original filename for uploads), tagged with `_orig` / `_dubbed_<lang>` / `_transcript_<lang>` etc., so multiple downloads don't collide or get confusing.
+
+## CLI
+
+`cli.py` is a thin wrapper around the exact same functions the two Streamlit
+apps use — it imports them directly, so there's no separate implementation to
+drift out of sync. Must live in the same folder as `youtube_transcriber.py`
+and `media_file_transcriber.py`.
+
+```bash
+# Transcribe two local files to plain text
+python cli.py --input_type file --source clip1.mp3 clip2.mp4 --output_type txt
+
+# Transcribe + translate a YouTube video to Japanese, get a captioned MP4 and a dubbed MP3
+python cli.py --input_type url --source https://youtu.be/XXXXXXXXXXX \
+    --output_type mp4 mp3 --target-lang Japanese
+
+# Batch: several files, every output type, translated to English
+python cli.py --input_type file --source a.mp3 b.mp4 c.wav \
+    --output_type txt mp3 mp4 --target-lang English --model small
+
+# See available target languages
+python cli.py --list-languages
+```
+
+Required flags: `--input_type {file,url}`, `--source` (one or more paths/URLs), `--output_type` (one or more of `txt mp3 mp4`).
+
+Useful optional flags: `--model` (Whisper size, default `base`), `--target-lang` (enables translation), `--display-mode` (`"Original only"` / `"Translated only"` / `"Both"` — controls what goes into `.txt`/`.mp4` output when translating), `--quality` (YouTube MP4 export resolution), `--resolution`/`--bg-color`/`--waveform` (lyric-video export for audio file uploads), `--output-dir` (default `./output`).
+
+Behaves like the UI's batch mode: duplicate sources are detected and skipped (by video ID for URLs, by absolute path for files), YouTube downloads get a short pause between them, and a failed source is logged and skipped rather than aborting the whole run — exit code is `1` if anything failed, `0` otherwise.
 
 ## Setup
 
