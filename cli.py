@@ -37,9 +37,21 @@ import re
 import sys
 import time
 
-# Quiet the harmless "No runtime found" caching warnings st.cache_data/
-# st.cache_resource print when used outside a running Streamlit app.
-logging.getLogger("streamlit").setLevel(logging.ERROR)
+# Streamlit's cache_data/cache_resource print a harmless "No runtime found"
+# warning when used outside a running Streamlit app (which is exactly how
+# this CLI uses them). The warning actually fires at *decoration time* (when
+# youtube_transcriber.py/media_file_transcriber.py define their @st.cache_data
+# functions during import), not at call time — so streamlit must be imported
+# and its specific logger silenced *before* importing our two modules, or
+# it's too late. Streamlit also sets an explicit level on these exact child
+# loggers during its own setup, so silencing the generic "streamlit" logger
+# instead doesn't stick — it has to target these precise names.
+import streamlit as _st  # noqa: F401  (import triggers streamlit's logger setup)
+for _logger_name in (
+    "streamlit.runtime.caching.cache_data_api",
+    "streamlit.runtime.caching.cache_resource_api",
+):
+    logging.getLogger(_logger_name).setLevel(logging.ERROR)
 
 import youtube_transcriber as yt
 import media_file_transcriber as mf
