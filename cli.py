@@ -17,7 +17,7 @@ Examples
 Transcribe two local files to plain text:
     python cli.py --input_type file --source clip1.mp3 clip2.mp4 --output_type txt
 
-Transcribe + translate a YouTube video to Japanese, get a captioned MP4 and a dubbed MP3:
+Transcribe + translate a YouTube (or any yt-dlp-supported) video to Japanese, get a captioned MP4 and a dubbed MP3:
     python cli.py --input_type url --source https://youtu.be/XXXXXXXXXXX \\
         --output_type mp4 mp3 --target-lang Japanese
 
@@ -162,24 +162,33 @@ def process_file_source(path, args):
 
 
 # ---------------------------------------------------------------------------
-# YouTube URL sources
+# URL sources (YouTube or any other yt-dlp-supported site)
 # ---------------------------------------------------------------------------
 
 def process_url_source(url, args):
     print(f"\n=== {url} ===")
-    video_id = yt.extract_video_id(url)
-    if not video_id:
-        raise ValueError("Couldn't parse a YouTube video ID from that URL.")
-    base_name = sanitize(yt.get_video_title(video_id))
+    try:
+        meta = yt.probe_url(url)
+    except Exception as e:
+        raise ValueError(f"Couldn't process this URL: {e}")
+    if not meta["is_youtube"]:
+        print(
+            "Note: not a YouTube URL — using yt-dlp's general site support. "
+            "Only download content you have the rights to use; platform terms of "
+            "service vary, site support depends on yt-dlp's maintained extractors "
+            "(which can break when a platform changes things), and private/"
+            "login-gated content isn't supported."
+        )
+    base_name = sanitize(meta["title"])[:60] or yt.get_source_id(meta, url)
 
     print(f"Downloading audio and transcribing ({args.model})...")
-    transcript = yt.transcribe(video_id, args.model)
+    transcript = yt.transcribe(url, args.model)
 
     translated, lang_code = None, None
     if args.target_lang:
         lang_code = yt.LANGUAGES[args.target_lang]
         print(f"Translating to {args.target_lang}...")
-        translated = yt.translate_segments(video_id, args.model, lang_code)
+        translated = yt.translate_segments(url, args.model, lang_code)
 
     display_mode = args.display_mode or ("Translated only" if translated else "Original only")
     display_segments = resolve_display_segments(transcript, translated, display_mode)
@@ -197,12 +206,12 @@ def process_url_source(url, args):
 
     if "mp3" in args.output_type:
         print("Extracting original audio...")
-        audio_bytes = yt.extract_original_audio_mp3(video_id)
+        audio_bytes = yt.extract_original_audio_mp3(url)
         outputs.append(write_bytes(
             os.path.join(args.output_dir, f"{base_name}_orig.mp3"), audio_bytes))
         if translated:
             print("Synthesizing dubbed audio (edge-tts, approximate timing)...")
-            dub_bytes = yt.synthesize_dubbed_audio(video_id, lang_code, json.dumps(translated))
+            dub_bytes = yt.synthesize_dubbed_audio(url, lang_code, json.dumps(translated))
             outputs.append(write_bytes(
                 os.path.join(args.output_dir, f"{base_name}_dubbed_{lang_code}.mp3"), dub_bytes))
 
@@ -210,7 +219,7 @@ def process_url_source(url, args):
         print(f"Downloading full video ({args.quality}) and burning in captions — this can take a while...")
         srt_text = yt.build_srt(display_segments)
         suffix_tag = yt.caption_suffix(bool(args.target_lang), translated, display_mode, lang_code or "")
-        video_bytes = yt.render_captioned_video(video_id, args.quality, srt_text)
+        video_bytes = yt.render_captioned_video(url, args.quality, srt_text)
         outputs.append(write_bytes(
             os.path.join(args.output_dir, f"{base_name}_captioned{suffix_tag}.mp4"), video_bytes))
 
@@ -223,14 +232,15 @@ def process_url_source(url, args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Transcribe, translate, dub, and caption audio/video from files or YouTube URLs.",
+        description="Transcribe, translate, dub, and caption audio/video from files or video/audio URLs "
+                    "(YouTube and hundreds of other sites supported by yt-dlp).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument("--input_type", choices=["file", "url"],
-                        help="Whether --source entries are local file paths or YouTube URLs.")
+                        help="Whether --source entries are local file paths or video/audio URLs.")
     parser.add_argument("--source", nargs="+",
-                        help="One or more file paths or YouTube URLs (space-separated).")
+                        help="One or more file paths or video/audio URLs (space-separated).")
     parser.add_argument("--output_type", nargs="+", choices=["txt", "mp3", "mp4"],
                         help="One or more output types (space-separated).")
     parser.add_argument("--model", default="base", choices=MODEL_CHOICES,
@@ -241,7 +251,7 @@ def build_parser():
                         help="Which captions to use for .txt/.mp4 output when translating "
                              "(default: 'Translated only' if --target-lang is set, else 'Original only').")
     parser.add_argument("--quality", default="720p", choices=list(yt.QUALITY_HEIGHTS.keys()),
-                        help="Video quality for YouTube MP4 export (default: 720p).")
+                        help="Video quality for URL-source MP4 export (default: 720p).")
     parser.add_argument("--resolution", default="1280x720",
                         help="Resolution (WxH) for lyric-video export from audio file uploads (default: 1280x720).")
     parser.add_argument("--bg-color", default="#000000",
@@ -273,7 +283,14 @@ def main():
     # De-duplicate sources up front, same as the batch-mode UI does.
     seen, sources = {}, []
     for src in args.source:
-        dedup_key = yt.extract_video_id(src) if args.input_type == "url" else os.path.abspath(src)
+        if args.input_type == "url":
+            try:
+                meta = yt.probe_url(src)
+                dedup_key = yt.get_source_id(meta, src)
+            except Exception:
+                dedup_key = src  # let it fail properly later with a clear per-source error
+        else:
+            dedup_key = os.path.abspath(src)
         if dedup_key in seen:
             print(f"Skipping duplicate source: {src} (same as {seen[dedup_key]})", file=sys.stderr)
             continue
@@ -290,7 +307,7 @@ def main():
             else:
                 outputs = process_url_source(src, args)
                 if i < len(sources) - 1:
-                    time.sleep(1.5)  # be a little gentler on YouTube between downloads
+                    time.sleep(1.5)  # be a little gentler on hosting sites between downloads
             all_outputs.extend(outputs)
             for p in outputs:
                 print(f"  -> {p}")

@@ -1,14 +1,15 @@
 # Media Transcriber Suite
 
-Transcribe, translate, caption, and dub video/audio — from a YouTube URL or from
-your own uploaded files — all in Streamlit.
+Transcribe, translate, caption, and dub video/audio — from a URL (YouTube and
+hundreds of other sites, via yt-dlp) or from your own uploaded files — all in
+Streamlit.
 
 ## What's in here
 
 | File | What it does |
 |---|---|
-| `transcriber_app.py` | **Launcher.** Sidebar lets you pick "YouTube URL" or "Upload a File", then dispatches to one of the two apps below. Run this one. |
-| `youtube_transcriber.py` | Paste YouTube URL(s) (one or many, one per line) → embedded player(s) with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. Batch mode: one tab per video. |
+| `transcriber_app.py` | **Launcher.** Sidebar lets you pick "Video/audio URL" or "Upload a File", then dispatches to one of the two apps below. Run this one. |
+| `youtube_transcriber.py` | Paste video/audio URL(s) — YouTube or hundreds of other sites via yt-dlp (one or many, one per line) → player(s) with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. Batch mode: one tab per source. |
 | `media_file_transcriber.py` | Upload your own audio/video file(s) → same feature set, plus **batch mode** (multiple files, each in its own tab). |
 | `cli.py` | Command-line interface — same engine as both apps above, no browser needed. Good for scripting/automation. |
 | `mtt_ui.py` | Console-script wrapper — installed as `mtt-ui`, launches the Streamlit UI (`transcriber_app.py`) as a real pip-installed command. |
@@ -29,7 +30,7 @@ Each app file is also fully runnable on its own (`streamlit run youtube_transcri
   - Downloadable `.mp4` with captions burned in permanently (hardcoded via ffmpeg's `subtitles` filter). For audio-only uploads, this instead synthesizes a simple "lyric video" (solid background, optional waveform) so you still get a shareable video.
 - **Batch mode** (file-upload app only): upload several files at once, each gets its own tab named after the file. A "Transcribe All" button queues transcription across all of them sequentially.
 - **Broad format support** for uploads: audio `.mp3 .wav .m4a .aac .flac .ogg .opus .wma`, video `.mp4 .m4v .webm .mov .mkv .avi .flv`.
-- **Sensible filenames**: downloads are named after the source (video title for YouTube, original filename for uploads), tagged with `_orig` / `_dubbed_<lang>` / `_transcript_<lang>` etc., so multiple downloads don't collide or get confusing.
+- **Sensible filenames**: downloads are named after the source (title for URLs, original filename for uploads), tagged with `_orig` / `_dubbed_<lang>` / `_transcript_<lang>` etc., so multiple downloads don't collide or get confusing.
 
 ## CLI
 
@@ -42,7 +43,7 @@ and `media_file_transcriber.py`.
 # Transcribe two local files to plain text
 python cli.py --input_type file --source clip1.mp3 clip2.mp4 --output_type txt
 
-# Transcribe + translate a YouTube video to Japanese, get a captioned MP4 and a dubbed MP3
+# Transcribe + translate a YouTube (or any yt-dlp-supported) video to Japanese, get a captioned MP4 and a dubbed MP3
 python cli.py --input_type url --source https://youtu.be/XXXXXXXXXXX \
     --output_type mp4 mp3 --target-lang Japanese
 
@@ -56,9 +57,9 @@ python cli.py --list-languages
 
 Required flags: `--input_type {file,url}`, `--source` (one or more paths/URLs), `--output_type` (one or more of `txt mp3 mp4`).
 
-Useful optional flags: `--model` (Whisper size, default `base`), `--target-lang` (enables translation), `--display-mode` (`"Original only"` / `"Translated only"` / `"Both"` — controls what goes into `.txt`/`.mp4` output when translating), `--quality` (YouTube MP4 export resolution), `--resolution`/`--bg-color`/`--waveform` (lyric-video export for audio file uploads), `--output-dir` (default `./output`).
+Useful optional flags: `--model` (Whisper size, default `base`), `--target-lang` (enables translation), `--display-mode` (`"Original only"` / `"Translated only"` / `"Both"` — controls what goes into `.txt`/`.mp4` output when translating), `--quality` (URL-source MP4 export resolution), `--resolution`/`--bg-color`/`--waveform` (lyric-video export for audio file uploads), `--output-dir` (default `./output`).
 
-Behaves like the UI's batch mode: duplicate sources are detected and skipped (by video ID for URLs, by absolute path for files), YouTube downloads get a short pause between them, and a failed source is logged and skipped rather than aborting the whole run — exit code is `1` if anything failed, `0` otherwise.
+Behaves like the UI's batch mode: duplicate sources are detected and skipped (by a stable source ID for URLs — derived from actual site metadata, not just the literal URL string, so different URL shapes for the same video are still caught — or by absolute path for files), URL downloads get a short pause between them, and a failed source is logged and skipped rather than aborting the whole run — exit code is `1` if anything failed, `0` otherwise.
 
 ### Installing it as standalone `mtt` / `mtt-ui` commands
 
@@ -112,7 +113,7 @@ Windows/macOS/Linux all just use whichever comes first in `PATH` — run
 streamlit run transcriber_app.py
 ```
 
-This opens the launcher with a sidebar toggle between the YouTube and file-upload flows. Or run either app directly if you only need one:
+This opens the launcher with a sidebar toggle between the URL and file-upload flows. Or run either app directly if you only need one:
 
 ```bash
 streamlit run youtube_transcriber.py
@@ -122,16 +123,21 @@ streamlit run media_file_transcriber.py
 ## Usage notes
 
 - **Transcribe first**, then optionally enable translation in the sidebar — translation re-runs automatically when you change the target language or display mode, but transcription itself only re-runs when you click the button (and only if the model size changed).
-- **Batch mode**: both apps support processing multiple items at once — paste several YouTube URLs (one per line) or upload multiple files — each gets its own tab named after its source. **"Transcribe All"** queues transcription across all of them sequentially (Streamlit is single-threaded per session, so this isn't parallel), then open individual tabs to translate/export each one. Duplicate items (same video ID, or identical file content) are detected and skipped with a warning rather than erroring. Video export (MP4 with burned-in captions) stays a deliberate per-tab action in both apps — it's the heaviest operation, so it's not batched.
+- **Batch mode**: both apps support processing multiple items at once — paste several video/audio URLs (one per line) or upload multiple files — each gets its own tab named after its source. **"Transcribe All"** queues transcription across all of them sequentially (Streamlit is single-threaded per session, so this isn't parallel), then open individual tabs to translate/export each one. Duplicate items (same source, or identical file content) are detected and skipped with a warning rather than erroring. Video export (MP4 with burned-in captions) stays a deliberate per-tab action in both apps — it's the heaviest operation, so it's not batched.
 - **MP4 export** re-encodes the video track (audio is stream-copied), so it's slower than transcription — expect it to take a while on longer/higher-resolution videos.
 - Files embedded for the custom player/overlay in the upload app are inlined as base64, so very large uploads (100+ MB) will be slow to preview in-browser; transcription/translation/export aren't affected.
-- YouTube batch mode is network-bound (each video is actually downloaded), so it's noticeably slower per item than file batch mode and scales with video count accordingly. There's a short delay between downloads to be gentler on YouTube, but a large batch can still take a while — and is more exposed to YouTube-side rate limiting than local files ever would be.
+- URL batch mode is network-bound (each source is actually downloaded), so it's noticeably slower per item than file batch mode and scales with source count accordingly. There's a short delay between downloads to be gentler on the hosting site, but a large batch can still take a while — and is more exposed to site-side rate limiting than local files ever would be.
 
 ## Limitations
 
+- **Non-YouTube URL support comes from yt-dlp**, which covers roughly 1,800 sites (Vimeo, Twitter/X, TikTok, SoundCloud, Twitch VODs, direct `.mp4`/`.mp3` links, etc. — see [yt-dlp's supported-sites list](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)). A few things worth knowing:
+  - **Only download content you have the rights to use.** Platform terms of service vary a lot on this, and checking that is on the person using the tool — this app doesn't and can't enforce it.
+  - **Site support can break.** It depends on yt-dlp's actively maintained per-site "extractors," which stop working when a platform changes its internals until yt-dlp is updated. "Works with any URL" means "any URL yt-dlp currently supports," not a permanent guarantee — a failure may be a temporarily broken extractor rather than a bug here.
+  - **Private/login-gated content isn't supported.** yt-dlp can do this with extra cookie/auth setup, but that's meaningfully more scope than what's implemented here.
+  - **Preview differs by source.** YouTube gets the full experience — captions overlaid live on an embedded, scrubbable player. Everything else has no public embeddable player API to reuse, so there's no preview *before* transcribing; once transcribed (which already downloads the audio), you get a native audio player with a synced, lyrics-style caption line instead — same pattern as an uploaded audio file. MP4 export (burning captions onto the actual video) still works for any supported source, YouTube or not — it just isn't part of the live preview.
 - **Translation** uses the free, unofficial Google Translate backend (via `deep-translator`) — good for everyday use, not a professional MT service, and requires internet access.
 - **Source language is auto-detected**, not user-specified — this works for any spoken language (transcription and translation aren't locked to English), but manually specifying it when you already know it (e.g. `language="es"`) would improve both speed and accuracy. Not yet exposed as an option.
 - **Dubbed audio** is an approximation: TTS pacing rarely matches the original speaker exactly. Lines are sped up by up to 50% to try to fit their original time slot; anything that would need more than that to fit will still overlap somewhat. Treat it as "get the gist in another language," not a lip-synced dub.
 - **edge-tts** is an unofficial, reverse-engineered wrapper around Microsoft's Read Aloud service (same category of tool as the free Google Translate backend above) — free and keyless, but not an official/supported API.
 - A few uploaded formats (`.wma`, `.mov`, `.mkv`, `.avi`, `.flv`) commonly don't play back natively in the browser's preview player even though transcription/translation/export all still work fine on them — the app flags this when it applies.
-- `st.cache_data`/`st.cache_resource` are used throughout to avoid redoing expensive work (transcription, translation, rendering), keyed by content hash (uploads) or video ID (YouTube) plus the relevant settings — so switching a model size or target language will trigger fresh work the first time, then reuse it afterward.
+- `st.cache_data`/`st.cache_resource` are used throughout to avoid redoing expensive work (transcription, translation, rendering), keyed by content hash (uploads) or the actual URL (URL sources) plus the relevant settings — so switching a model size or target language will trigger fresh work the first time, then reuse it afterward.

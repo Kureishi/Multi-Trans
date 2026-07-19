@@ -4,7 +4,9 @@ Media Transcriber Suite — launcher
 
 A thin front door that lets the user choose which transcription flow to use:
 
-    1. YouTube URL           -> youtube_transcriber.run()
+    1. Video/audio URL       -> youtube_transcriber.run() (despite the
+                                 filename, not YouTube-only — see that
+                                 file's docstring)
     2. Upload a file (mp3/mp4) -> media_file_transcriber.run()
 
 Both underlying apps remain fully independent and can still be run directly
@@ -38,11 +40,11 @@ st.set_page_config(page_title="Media Transcriber Suite", layout="wide")
 st.sidebar.title("🎬 Media Transcriber Suite")
 source = st.sidebar.radio(
     "Choose input source",
-    ["YouTube URL", "Upload a File"],
+    ["Video/audio URL", "Upload a File"],
 )
 st.sidebar.divider()
 
-if source == "YouTube URL":
+if source == "Video/audio URL":
     import youtube_transcriber
     youtube_transcriber.run()
 else:

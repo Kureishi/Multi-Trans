@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mtt-transcriber"
 version = "0.2.0"
-description = "Transcribe, translate, dub, and caption audio/video from files or YouTube URLs."
+description = "Transcribe, translate, dub, and caption audio/video from files or video/audio URLs (YouTube and hundreds of other sites via yt-dlp)."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
