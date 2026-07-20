@@ -38,8 +38,8 @@ Each app file is also fully runnable on its own (`streamlit run youtube_transcri
 
 `cli.py` is a thin wrapper around the exact same functions the two Streamlit
 apps use — it imports them directly, so there's no separate implementation to
-drift out of sync. Must live in the same folder as `youtube_transcriber.py`
-and `media_file_transcriber.py`.
+drift out of sync. Must live in the same folder as `youtube_transcriber.py`,
+`media_file_transcriber.py`, and `diarization.py`.
 
 ```bash
 # Transcribe two local files to plain text

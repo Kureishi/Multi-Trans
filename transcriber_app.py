@@ -13,11 +13,12 @@ Both underlying apps remain fully independent and can still be run directly
 via `streamlit run youtube_transcriber.py` or
 `streamlit run media_file_transcriber.py` — this file just imports their
 `run()` functions and dispatches to whichever one the user picks, so all
-three files must live in the same folder:
+four files must live in the same folder:
 
     transcriber_app.py
     youtube_transcriber.py
     media_file_transcriber.py
+    diarization.py
 
 Run with:
     streamlit run transcriber_app.py
@@ -27,6 +28,13 @@ Requirements (pip install):
     faster-whisper
     yt-dlp
     deep-translator
+    edge-tts
+
+Optional (only if you enable speaker diarization in either app's sidebar):
+    speechbrain
+    torch
+    scikit-learn
+    (or: pip install mtt-transcriber[diarization])
 
 System requirement:
     ffmpeg on PATH, built with libass support (needed for the `subtitles`

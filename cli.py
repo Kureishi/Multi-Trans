@@ -25,6 +25,13 @@ Batch: several files, every output type, translated to English:
     python cli.py --input_type file --source a.mp3 b.mp4 c.wav \\
         --output_type txt mp3 mp4 --target-lang English --model small
 
+Detect speakers ("who's speaking when") and label output with raw SPEAKER_NN
+IDs (needs the optional 'speechbrain', 'torch', and 'scikit-learn' packages —
+pip install mtt-transcriber[diarization] — see diarization.py for the
+approach and real accuracy limitations):
+    python cli.py --input_type file --source meeting.mp3 --output_type txt \\
+        --diarize --num-speakers 3
+
 List available target languages:
     python cli.py --list-languages
 """
