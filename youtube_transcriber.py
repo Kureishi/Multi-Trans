@@ -30,6 +30,12 @@ Requirements (pip install):
     deep-translator
     edge-tts
 
+Optional (only if you enable speaker diarization):
+    speechbrain
+    torch
+    scikit-learn
+    (or: pip install mtt-transcriber[diarization])
+
 System requirement:
     ffmpeg must be installed and on PATH (used by yt-dlp to extract audio,
     and by faster-whisper/PyAV to decode it).
@@ -67,6 +73,14 @@ How it works:
        deliberately per-tab, not batched — it's the heaviest operation (full
        video download + re-encode), so it stays a manual, one-at-a-time
        action even in batch mode.
+    6. Optionally, detect speakers ("who's speaking when") via the free,
+       keyless SpeechBrain-based approach in diarization.py — opt-in, since
+       it pulls in a sizeable PyTorch-based dependency. See that file's
+       docstring for real accuracy limitations before trusting the output;
+       it's an estimate to help organize a transcript, not ground truth.
+       Detected speakers can be renamed (e.g. SPEAKER_00 -> "Alice"), and
+       the resulting "[Name] " prefix flows through to the live preview,
+       downloaded transcripts, and burned-in captions alike.
 """
 
 import os
@@ -440,11 +454,22 @@ def caption_suffix(enable_translation: bool, translated, display_mode: str, lang
     return ""
 
 
+@st.cache_data(show_spinner=False)
+def diarize(url: str, num_speakers):
+    """Optional speaker diarization (see diarization.py for the approach and
+    accuracy limitations). Lazily imports diarization.py so its heavy
+    optional dependencies (torch, speechbrain) are only ever touched if this
+    feature is actually used."""
+    import diarization
+    audio_path = download_audio(url)  # cache hit — already fetched during transcribe
+    return diarization.diarize_audio(audio_path, num_speakers)
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
-def process_one_video(url, model_size, enable_translation, target_lang_label, display_mode):
+def process_one_video(url, model_size, enable_translation, target_lang_label, display_mode, enable_diarization, num_speakers):
     """Runs the full single-source pipeline (transcribe/translate/preview/export)
     for one URL — YouTube or any other yt-dlp-supported site. Called once per
     tab in batch mode."""
@@ -484,26 +509,65 @@ def process_one_video(url, model_size, enable_translation, target_lang_label, di
 
     transcript = st.session_state.get(transcribe_key)
 
+    import diarization  # lightweight import — heavy deps (torch/speechbrain) only load if actually used
+
+    if transcript:
+        if enable_diarization:
+            with st.spinner("Detecting speakers..."):
+                try:
+                    turns = diarize(url, num_speakers)
+                    transcript = diarization.assign_speakers(transcript, turns)
+                except Exception as e:
+                    st.error(f"Speaker detection failed: {e}")
+                    transcript = [dict(s, speaker=None) for s in transcript]
+
+            detected_labels = diarization.speaker_labels_in(transcript)
+            name_map = {}
+            if detected_labels:
+                with st.expander(f"Rename detected speakers ({len(detected_labels)})"):
+                    for lbl in detected_labels:
+                        name_map[lbl] = st.text_input(
+                            f"Name for {lbl}", value="", key=f"speakername_{source_id}_{lbl}",
+                        )
+            transcript = diarization.apply_speaker_names(transcript, name_map)
+        else:
+            transcript = [dict(s, speaker=None, speaker_display=None) for s in transcript]
+
     translated = None
     if transcript and enable_translation:
         target_lang_code = LANGUAGES[target_lang_label]
         with st.spinner(f"Translating to {target_lang_label}..."):
             try:
                 translated = translate_segments(url, model_size, target_lang_code)
+                translated = [
+                    dict(t, speaker=o.get("speaker"), speaker_display=o.get("speaker_display"))
+                    for o, t in zip(transcript, translated)
+                ]
             except Exception as e:
                 st.error(f"Translation failed: {e}")
                 translated = None
 
     if transcript and enable_translation and translated:
         if display_mode == "Translated only":
-            display_segments = translated
+            display_segments = [
+                {"start": t["start"], "end": t["end"], "text": diarization.speaker_prefix(t) + t["text"]}
+                for t in translated
+            ]
         elif display_mode == "Both":
             display_segments = [
-                {"start": o["start"], "end": o["end"], "text": f"{o['text']}\n{t['text']}"}
+                {"start": o["start"], "end": o["end"], "text": f"{diarization.speaker_prefix(o)}{o['text']}\n{t['text']}"}
                 for o, t in zip(transcript, translated)
             ]
         else:  # Original only
-            display_segments = transcript
+            display_segments = [
+                {"start": o["start"], "end": o["end"], "text": diarization.speaker_prefix(o) + o["text"]}
+                for o in transcript
+            ]
+    elif transcript:
+        display_segments = [
+            {"start": o["start"], "end": o["end"], "text": diarization.speaker_prefix(o) + o["text"]}
+            for o in transcript
+        ]
     else:
         display_segments = transcript
 
@@ -760,7 +824,7 @@ def process_one_video(url, model_size, enable_translation, target_lang_label, di
             components.html(html_code, height=560, scrolling=False)
 
     if transcript:
-        full_text = "\n".join(f"[{fmt_time(s['start'])}] {s['text']}" for s in transcript)
+        full_text = "\n".join(f"[{fmt_time(s['start'])}] {diarization.speaker_prefix(s)}{s['text']}" for s in transcript)
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
             st.download_button(
@@ -771,7 +835,7 @@ def process_one_video(url, model_size, enable_translation, target_lang_label, di
                 key=f"dl_transcript_orig_{source_id}",
             )
         if translated:
-            translated_text = "\n".join(f"[{fmt_time(s['start'])}] {s['text']}" for s in translated)
+            translated_text = "\n".join(f"[{fmt_time(s['start'])}] {diarization.speaker_prefix(s)}{s['text']}" for s in translated)
             lang_code = LANGUAGES[target_lang_label]
             with dl_col2:
                 st.download_button(
@@ -905,6 +969,30 @@ def run():
         )
         st.caption("Translation uses Google Translate via the free `deep-translator` package (requires internet).")
 
+        st.header("Speaker detection")
+        enable_diarization = st.checkbox("Detect speakers (diarization)", value=False)
+        speaker_count_mode = st.radio(
+            "Number of speakers",
+            ["Auto-detect", "I know the number"],
+            index=0,
+            disabled=not enable_diarization,
+            horizontal=True,
+        )
+        num_speakers = None
+        if enable_diarization and speaker_count_mode == "I know the number":
+            num_speakers = st.number_input(
+                "Expected speakers", min_value=2, max_value=20, value=2, step=1,
+            )
+        st.caption(
+            "Uses SpeechBrain's ECAPA-TDNN speaker-embedding model (free, no account "
+            "or token needed — unlike the more commonly used pyannote). This is an "
+            "estimate, not ground truth: overlapping speech isn't modeled, similar-"
+            "sounding voices are the most common failure case, and auto-detecting the "
+            "speaker count is a rough heuristic — specifying it above (if you know it) "
+            "is meaningfully more reliable. Adds a sizeable PyTorch-based dependency "
+            "and downloads a model (~90MB) the first time it's used."
+        )
+
     urls_text = st.text_area(
         "Video/audio URLs (one per line)",
         placeholder="https://www.youtube.com/watch?v=...\nhttps://vimeo.com/...\nhttps://example.com/clip.mp4",
@@ -992,7 +1080,7 @@ def run():
             tabs = st.tabs(tab_labels)
             for tab, (video_url, _sid, _label) in zip(tabs, videos):
                 with tab:
-                    process_one_video(video_url, model_size, enable_translation, target_lang_label, display_mode)
+                    process_one_video(video_url, model_size, enable_translation, target_lang_label, display_mode, enable_diarization, num_speakers)
         else:
             st.info("Paste at least one valid, supported URL above to get started.")
     else:

@@ -11,6 +11,7 @@ Streamlit.
 | `transcriber_app.py` | **Launcher.** Sidebar lets you pick "Video/audio URL" or "Upload a File", then dispatches to one of the two apps below. Run this one. |
 | `youtube_transcriber.py` | Paste video/audio URL(s) — YouTube or hundreds of other sites via yt-dlp (one or many, one per line) → player(s) with synced/overlaid captions, translation, dubbed audio, and MP4 export with burned-in captions. Batch mode: one tab per source. |
 | `media_file_transcriber.py` | Upload your own audio/video file(s) → same feature set, plus **batch mode** (multiple files, each in its own tab). |
+| `diarization.py` | Shared, optional speaker-diarization module (SpeechBrain-based) used by both apps and the CLI. Not imported until you actually enable the feature. |
 | `cli.py` | Command-line interface — same engine as both apps above, no browser needed. Good for scripting/automation. |
 | `mtt_ui.py` | Console-script wrapper — installed as `mtt-ui`, launches the Streamlit UI (`transcriber_app.py`) as a real pip-installed command. |
 | `pyproject.toml` | Packaging config — installs `cli.py` and `mtt_ui.py` as standalone `mtt` / `mtt-ui` commands (see below). |
@@ -24,6 +25,7 @@ Each app file is also fully runnable on its own (`streamlit run youtube_transcri
 - **Transcription** via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (choose model size: `tiny` → `large-v3`).
 - **Translation** to 14 languages (including English) via Google Translate (free, through `deep-translator`), with a choice of showing Original / Translated / Both. Source language is auto-detected, so this also covers translating non-English audio *into* English.
 - **Dubbed audio** via [edge-tts](https://github.com/rany2/edge-tts): synthesizes each translated line and times it to the original segment, speeding lines up (capped, to stay intelligible) when they'd otherwise run long and overlap the next one. This is an approximation of a real dub, not a polished one — see **Limitations** below.
+- **Speaker diarization** ("who's speaking when"), optional — via SpeechBrain's freely-downloadable ECAPA-TDNN speaker-embedding model (no account or token needed, unlike the more commonly used pyannote). Detected speakers can be renamed in the UI (e.g. `SPEAKER_00` → "Alice"), and the resulting `[Name]` prefix flows through to the live preview, downloaded transcripts, and burned-in captions alike. This is a real accuracy tradeoff, not just a licensing one — see **Speaker diarization** and **Limitations** below before trusting the output.
 - **Export**:
   - Downloadable `.txt` transcripts (original and/or translated).
   - Downloadable audio-only `.mp3` (original track, or the dubbed track).
@@ -76,6 +78,34 @@ mtt-ui                               # opens the Streamlit UI in your browser
 ```
 
 This is also the scaffold for turning this into a proper published pip package later — `pyproject.toml` already declares the dependencies and both entry points; publishing would mainly mean choosing a real package name/version and running through `build`/`twine` (or similar), rather than restructuring anything here.
+
+## Speaker diarization (optional)
+
+Both apps and the CLI can optionally detect "who's speaking when" and label transcript lines accordingly (`[Alice] ...`), via a shared module (`diarization.py`) rather than duplicated logic.
+
+**Why SpeechBrain instead of the more commonly recommended pyannote:** pyannote's pretrained pipelines are gated on Hugging Face — using them requires creating an HF account, manually accepting the model's license on its page, generating an access token, and passing it in. For a pip-installed tool, that's a meaningfully bigger ask than a plain `pip install`. SpeechBrain's `speechbrain/spkrec-ecapa-voxceleb` model is Apache-2.0 licensed and freely downloadable — no account, no license click-through, no token.
+
+**The tradeoff is real, not just licensing:** this isn't a dedicated end-to-end diarization pipeline like pyannote's — it's speaker *embeddings*, turned into diarization here via sliding-window embedding + clustering (`scikit-learn`'s `AgglomerativeClustering`). Accuracy limitations worth knowing before trusting the output (also documented in `diarization.py`'s docstring):
+- No dedicated voice-activity-detection model — silence is skipped via a simple energy threshold, not a real VAD, so quiet speech can be missed and loud noise can be mistaken for speech.
+- Overlapping speech (people talking over each other) isn't modeled — a window with two people gets assigned to whichever one speaker it's closest to, not "both."
+- Similar-sounding voices are the most common failure case — clustering can merge two real speakers into one, or split one speaker into two if their voice varies a lot.
+- Without a known speaker count, automatic cluster-count detection is a rough heuristic and can over- or under-count speakers — **providing the expected count when you know it is meaningfully more reliable** than letting it guess.
+- Speaker identity is assigned per transcript *segment* as a whole (by maximum time-overlap with detected speaker turns), not split exactly at the word where a speaker change happens mid-segment.
+- This is an estimate to help organize a transcript, not a verified, ground-truth speaker log.
+
+**Install** (not included by default — it's a genuinely heavy, PyTorch-based dependency, so it's opt-in):
+
+```bash
+pip install speechbrain torch scikit-learn
+# or, if installed via pip/pyproject.toml:
+pip install mtt-transcriber[diarization]
+```
+
+**Usage:**
+- **UI**: sidebar → "Speaker detection" → check "Detect speakers (diarization)", optionally specify the expected speaker count, then transcribe as normal. After detection, an expander lets you rename each detected `SPEAKER_NN` to an actual name; renaming updates the live preview, downloaded transcripts, and any burned-in MP4 captions.
+- **CLI**: `--diarize` (flag) and `--num-speakers N` (optional int hint). The CLI has no interactive rename prompt — output uses raw `SPEAKER_NN` labels.
+
+The first use downloads the SpeechBrain model (~90MB) and caches it locally; after that it's reused across runs.
 
 ## Setup
 
@@ -138,6 +168,7 @@ streamlit run media_file_transcriber.py
 - **Translation** uses the free, unofficial Google Translate backend (via `deep-translator`) — good for everyday use, not a professional MT service, and requires internet access.
 - **Source language is auto-detected**, not user-specified — this works for any spoken language (transcription and translation aren't locked to English), but manually specifying it when you already know it (e.g. `language="es"`) would improve both speed and accuracy. Not yet exposed as an option.
 - **Dubbed audio** is an approximation: TTS pacing rarely matches the original speaker exactly. Lines are sped up by up to 50% to try to fit their original time slot; anything that would need more than that to fit will still overlap somewhat. Treat it as "get the gist in another language," not a lip-synced dub.
+- **Speaker diarization** is a genuine estimate, not ground truth — see the dedicated **Speaker diarization** section above for the full list of accuracy caveats (no real VAD, overlapping speech unmodeled, similar voices are the main failure case, auto speaker-count detection is a rough heuristic). It's also opt-in and pulls in a heavy PyTorch-based dependency not installed by default.
 - **edge-tts** is an unofficial, reverse-engineered wrapper around Microsoft's Read Aloud service (same category of tool as the free Google Translate backend above) — free and keyless, but not an official/supported API.
 - A few uploaded formats (`.wma`, `.mov`, `.mkv`, `.avi`, `.flv`) commonly don't play back natively in the browser's preview player even though transcription/translation/export all still work fine on them — the app flags this when it applies.
 - `st.cache_data`/`st.cache_resource` are used throughout to avoid redoing expensive work (transcription, translation, rendering), keyed by content hash (uploads) or the actual URL (URL sources) plus the relevant settings — so switching a model size or target language will trigger fresh work the first time, then reuse it afterward.

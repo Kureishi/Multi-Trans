@@ -3,3 +3,11 @@ faster-whisper>=1.0
 yt-dlp>=2024.8.6
 deep-translator>=1.11
 edge-tts>=6.1
+
+# Optional — only needed if you enable speaker diarization in the sidebar/CLI.
+# Heavy (pulls in PyTorch), so not installed by default. Install with either:
+#   pip install -r requirements.txt speechbrain torch scikit-learn
+#   pip install mtt-transcriber[diarization]   (if installed via pip/pyproject.toml)
+# speechbrain>=1.0
+# torch>=2.0
+# scikit-learn>=1.3

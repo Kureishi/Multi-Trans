@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mtt-transcriber"
-version = "0.2.0"
+version = "0.3.0"
 description = "Transcribe, translate, dub, and caption audio/video from files or video/audio URLs (YouTube and hundreds of other sites via yt-dlp)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -16,9 +16,12 @@ dependencies = [
     "edge-tts>=6.1",
 ]
 
+[project.optional-dependencies]
+diarization = ["speechbrain>=1.0", "torch>=2.0", "scikit-learn>=1.3"]
+
 [project.scripts]
 mtt = "cli:main"
 mtt-ui = "mtt_ui:main"
 
 [tool.setuptools]
-py-modules = ["cli", "mtt_ui", "youtube_transcriber", "media_file_transcriber", "transcriber_app"]
+py-modules = ["cli", "mtt_ui", "youtube_transcriber", "media_file_transcriber", "transcriber_app", "diarization"]

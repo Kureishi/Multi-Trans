@@ -55,6 +55,7 @@ for _logger_name in (
 
 import youtube_transcriber as yt
 import media_file_transcriber as mf
+import diarization
 
 MODEL_CHOICES = ["tiny", "base", "small", "medium", "large-v3"]
 DISPLAY_MODE_CHOICES = ["Original only", "Translated only", "Both"]
@@ -66,15 +67,25 @@ def sanitize(name: str) -> str:
 
 def resolve_display_segments(transcript, translated, display_mode):
     if not translated:
-        return transcript
+        return [
+            {"start": o["start"], "end": o["end"], "text": diarization.speaker_prefix(o) + o["text"]}
+            for o in transcript
+        ]
     if display_mode == "Translated only":
-        return translated
+        return [
+            {"start": t["start"], "end": t["end"], "text": diarization.speaker_prefix(t) + t["text"]}
+            for t in translated
+        ]
     if display_mode == "Both":
         return [
-            {"start": o["start"], "end": o["end"], "text": f"{o['text']}\n{t['text']}"}
+            {"start": o["start"], "end": o["end"], "text": f"{diarization.speaker_prefix(o)}{o['text']}\n{t['text']}"}
             for o, t in zip(transcript, translated)
         ]
-    return transcript  # "Original only"
+    # "Original only"
+    return [
+        {"start": o["start"], "end": o["end"], "text": diarization.speaker_prefix(o) + o["text"]}
+        for o in transcript
+    ]
 
 
 def write_bytes(path, data):
@@ -112,11 +123,23 @@ def process_file_source(path, args):
     print(f"Transcribing ({args.model})...")
     transcript = mf.transcribe(fid, suffix, args.model)
 
+    if args.diarize:
+        print("Detecting speakers...")
+        turns = mf.diarize(fid, suffix, args.num_speakers)
+        transcript = diarization.assign_speakers(transcript, turns)
+        transcript = diarization.apply_speaker_names(transcript, {})  # raw SPEAKER_NN labels — no rename prompt in CLI
+    else:
+        transcript = [dict(s, speaker=None, speaker_display=None) for s in transcript]
+
     translated, lang_code = None, None
     if args.target_lang:
         lang_code = mf.LANGUAGES[args.target_lang]
         print(f"Translating to {args.target_lang}...")
         translated = mf.translate_segments(fid, suffix, args.model, lang_code)
+        translated = [
+            dict(t, speaker=o.get("speaker"), speaker_display=o.get("speaker_display"))
+            for o, t in zip(transcript, translated)
+        ]
 
     display_mode = args.display_mode or ("Translated only" if translated else "Original only")
     display_segments = resolve_display_segments(transcript, translated, display_mode)
@@ -124,11 +147,11 @@ def process_file_source(path, args):
     outputs = []
 
     if "txt" in args.output_type:
-        orig_txt = "\n".join(f"[{mf.fmt_time(s['start'])}] {s['text']}" for s in transcript)
+        orig_txt = "\n".join(f"[{mf.fmt_time(s['start'])}] {diarization.speaker_prefix(s)}{s['text']}" for s in transcript)
         outputs.append(write_text(
             os.path.join(args.output_dir, f"{base_name}_transcript_orig.txt"), orig_txt))
         if translated:
-            tr_txt = "\n".join(f"[{mf.fmt_time(s['start'])}] {s['text']}" for s in translated)
+            tr_txt = "\n".join(f"[{mf.fmt_time(s['start'])}] {diarization.speaker_prefix(s)}{s['text']}" for s in translated)
             outputs.append(write_text(
                 os.path.join(args.output_dir, f"{base_name}_transcript_{lang_code}.txt"), tr_txt))
 
@@ -184,11 +207,23 @@ def process_url_source(url, args):
     print(f"Downloading audio and transcribing ({args.model})...")
     transcript = yt.transcribe(url, args.model)
 
+    if args.diarize:
+        print("Detecting speakers...")
+        turns = yt.diarize(url, args.num_speakers)
+        transcript = diarization.assign_speakers(transcript, turns)
+        transcript = diarization.apply_speaker_names(transcript, {})  # raw SPEAKER_NN labels — no rename prompt in CLI
+    else:
+        transcript = [dict(s, speaker=None, speaker_display=None) for s in transcript]
+
     translated, lang_code = None, None
     if args.target_lang:
         lang_code = yt.LANGUAGES[args.target_lang]
         print(f"Translating to {args.target_lang}...")
         translated = yt.translate_segments(url, args.model, lang_code)
+        translated = [
+            dict(t, speaker=o.get("speaker"), speaker_display=o.get("speaker_display"))
+            for o, t in zip(transcript, translated)
+        ]
 
     display_mode = args.display_mode or ("Translated only" if translated else "Original only")
     display_segments = resolve_display_segments(transcript, translated, display_mode)
@@ -196,11 +231,11 @@ def process_url_source(url, args):
     outputs = []
 
     if "txt" in args.output_type:
-        orig_txt = "\n".join(f"[{yt.fmt_time(s['start'])}] {s['text']}" for s in transcript)
+        orig_txt = "\n".join(f"[{yt.fmt_time(s['start'])}] {diarization.speaker_prefix(s)}{s['text']}" for s in transcript)
         outputs.append(write_text(
             os.path.join(args.output_dir, f"{base_name}_transcript_orig.txt"), orig_txt))
         if translated:
-            tr_txt = "\n".join(f"[{yt.fmt_time(s['start'])}] {s['text']}" for s in translated)
+            tr_txt = "\n".join(f"[{yt.fmt_time(s['start'])}] {diarization.speaker_prefix(s)}{s['text']}" for s in translated)
             outputs.append(write_text(
                 os.path.join(args.output_dir, f"{base_name}_transcript_{lang_code}.txt"), tr_txt))
 
@@ -258,6 +293,17 @@ def build_parser():
                         help="Background color for lyric-video export (default: #000000).")
     parser.add_argument("--waveform", action="store_true",
                         help="Add a waveform visualization to lyric-video export.")
+    parser.add_argument("--diarize", action="store_true",
+                        help="Detect speakers ('who's speaking when') and prefix output with "
+                             "raw labels like [SPEAKER_00] — see diarization.py for the approach "
+                             "and real accuracy limitations. Needs the optional 'speechbrain', "
+                             "'torch', and 'scikit-learn' packages (pip install "
+                             "mtt-transcriber[diarization]). No interactive rename prompt in the "
+                             "CLI (unlike the UI) — labels stay as raw SPEAKER_NN IDs.")
+    parser.add_argument("--num-speakers", type=int, default=None,
+                        help="Expected number of speakers, if known — meaningfully improves "
+                             "diarization reliability over letting it auto-detect the count. "
+                             "Only used if --diarize is set.")
     parser.add_argument("--output-dir", default="./output",
                         help="Directory to write output files to (default: ./output).")
     parser.add_argument("--list-languages", action="store_true",
