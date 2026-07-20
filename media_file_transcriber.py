@@ -828,12 +828,12 @@ def run():
             )
         st.caption(
             "Uses SpeechBrain's ECAPA-TDNN speaker-embedding model (free, no account "
-            "or token needed — unlike the more commonly used pyannote). This is an "
-            "estimate, not ground truth: overlapping speech isn't modeled, similar-"
-            "sounding voices are the most common failure case, and auto-detecting the "
-            "speaker count is a rough heuristic — specifying it above (if you know it) "
-            "is meaningfully more reliable. Adds a sizeable PyTorch-based dependency "
-            "and downloads a model (~90MB) the first time it's used."
+            "or token needed). This is an estimate, not ground truth: overlapping "
+            "speech isn't modeled, similar-sounding voices are the most common "
+            "failure case, and auto-detecting the speaker count is a rough heuristic "
+            "— specifying it above (if you know it) is meaningfully more reliable. "
+            "Adds a sizeable PyTorch-based dependency and downloads a model (~90MB) "
+            "the first time it's used."
         )
 
     uploaded_files = st.file_uploader(
